@@ -11,6 +11,25 @@ install_lxd
 
 IMAGE="${TEST_IMG:-ubuntu-daily:24.04}"
 
+# checkMulticastReply sends a datagram to the test multicast group from c3 and
+# checks that c2's responder replies with its hostname. The first datagram can
+# be lost while c2's IGMP membership is still being resolved (socat then exits
+# with EPIPE before sending), so retry a few times before failing.
+checkMulticastReply() {
+    local reply=""
+
+    for _ in 1 2 3 4 5; do
+        reply="$(lxc exec c3 -- socat stdio udp4-datagram:239.0.0.1:1234 <<< "" || true)"
+        if [ "${reply}" = "c2" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "ERROR: expected multicast reply 'c2', got '${reply}'" >&2
+    return 1
+}
+
 # Test
 set -x
 
@@ -187,7 +206,7 @@ firewallTests() {
             waitInstanceReady c3
             lxc exec c3 -- apt-get update
             lxc exec c3 -- apt-get install --no-install-recommends --yes socat
-            [ "$(lxc exec c3 -- socat stdio udp4-datagram:239.0.0.1:1234 <<< "")" = "c2" ]
+            checkMulticastReply
             kill "${server_process}"
         fi
 
@@ -209,7 +228,7 @@ firewallTests() {
             lxc exec c2 -- socat udp4-recvfrom:1234,ip-add-membership=239.0.0.1:192.0.3.254,fork exec:hostname &
             server_process="$!"
             sleep 2 # wait for the multicast server to settle.
-            [ "$(lxc exec c3 -- socat stdio udp4-datagram:239.0.0.1:1234 <<< "")" = "c2" ]
+            checkMulticastReply
             kill "${server_process}"
 
             lxc delete -f c3
